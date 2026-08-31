@@ -1,0 +1,4 @@
+[server]
+sslCertFile = "cert.pem"
+sslKeyFile = "key.pem"
+address = "0.0.0.0"

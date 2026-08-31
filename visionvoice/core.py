@@ -241,15 +241,38 @@ class SceneUnderstandingAgent:
     def summarize(events: Iterable[RiskEvent]) -> str:
         event_list = list(events)
         if not event_list:
-            return "No mobility-relevant objects detected. Keep using primary mobility aids."
+            return "Clear path ahead. No mobility-relevant objects detected."
 
-        counts: dict[str, int] = defaultdict(int)
-        for event in event_list:
-            counts[event.label] += 1
-        items = [f"{count} {label}{'' if count == 1 else 's'}" for label, count in sorted(counts.items())]
-        summary = ", ".join(items[:4])
-        if any(event.label in SIGNS for event in event_list):
-            summary += "; traffic control detected"
+        immediate = [e for e in event_list if e.proximity == "immediate"]
+        nearby = [e for e in event_list if e.proximity == "nearby"]
+        approaching = [e.label for e in event_list if e.approaching]
+
+        parts = []
+        if immediate:
+            counts = defaultdict(int)
+            for e in immediate: counts[e.label] += 1
+            desc = ", ".join([f"{c} {lbl}{'' if c == 1 else 's'}" for lbl, c in counts.items()])
+            parts.append(f"Immediate danger: {desc}")
+            
+        if nearby:
+            counts = defaultdict(int)
+            for e in nearby: counts[e.label] += 1
+            desc = ", ".join([f"{c} {lbl}{'' if c == 1 else 's'}" for lbl, c in counts.items()])
+            parts.append(f"Nearby: {desc}")
+            
+        if approaching:
+            parts.append(f"Approaching: {', '.join(set(approaching))}")
+            
+        if not parts:
+            counts = defaultdict(int)
+            for e in event_list: counts[e.label] += 1
+            desc = ", ".join([f"{c} {lbl}{'' if c == 1 else 's'}" for lbl, c in counts.items()][:3])
+            parts.append(f"In view: {desc}")
+            
+        summary = "; ".join(parts)
+        if any(e.label in SIGNS for e in event_list):
+            summary += " (Traffic control present)"
+            
         return summary.capitalize() + "."
 
 
@@ -266,12 +289,22 @@ class AlertPlanningAgent:
     def _message(event: RiskEvent) -> str:
         article = "An" if event.label[0].lower() in "aeiou" else "A"
         object_name = event.label
+        
+        evasion = ""
+        if event.severity in {"critical", "caution"} and event.is_hazard:
+            if event.direction in {"far left", "left"}:
+                evasion = "Move right for safety! "
+            elif event.direction in {"far right", "right"}:
+                evasion = "Move left for safety! "
+            else:
+                evasion = "Move away for safety! "
+
         if event.is_vehicle and event.approaching:
-            return f"{article} {object_name} is approaching {event.direction}, {format_distance(event.distance_m)}."
+            return f"{evasion}{article} {object_name} is approaching {event.direction}, {format_distance(event.distance_m)}."
         if event.severity == "critical":
-            return f"Warning: {article} {object_name} is very close {event.direction}, {format_distance(event.distance_m)}."
+            return f"{evasion}Warning: {article} {object_name} is very close {event.direction}, {format_distance(event.distance_m)}."
         if event.severity == "caution":
-            return f"{article} {object_name} is nearby {event.direction}, {format_distance(event.distance_m)}."
+            return f"{evasion}{article} {object_name} is nearby {event.direction}, {format_distance(event.distance_m)}."
         return f"{article} {object_name} is present {event.direction}, {format_distance(event.distance_m)}."
 
     def plan(
@@ -297,18 +330,32 @@ class AlertPlanningAgent:
         else:
             ranked = sorted(candidates, key=lambda event: (not event.is_hazard, -event.score))
             selected = ranked if max_objects <= 0 else ranked[:max_objects]
+            
+            hazards_msg = " ".join(self._message(e) for e in selected if e.is_hazard or e.severity in {"critical", "caution"})
+            others_msg = " ".join(self._message(e) for e in selected if not (e.is_hazard or e.severity in {"critical", "caution"}))
+            
+            parts = []
+            if hazards_msg:
+                parts.append(hazards_msg)
+            if others_msg:
+                if hazards_msg:
+                    parts.append("Also detected: " + others_msg)
+                else:
+                    parts.append(others_msg)
+            
+            message = " ".join(parts)
+
             if narrate_all:
-                has_hazard = any(event.is_hazard for event in selected)
-                message = " ".join(self._message(event) for event in selected)
-                if not has_hazard:
+                if not hazards_msg:
                     message = f"Normal scene. {message} Go."
                     is_normal_scene = True
-            else:
-                message = " ".join(self._message(event) for event in selected)
                 
         timestamp = monotonic() if now is None else now
         
         if is_normal_scene:
+            if not self._last_was_normal and (timestamp - self._last_sent_at < 2.5):
+                return None
+                
             if self._last_was_normal and (timestamp - self._last_sent_at < 3.0):
                 return None
             else:

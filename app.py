@@ -11,7 +11,7 @@ from typing import Optional
 import cv2
 import numpy as np
 import streamlit as st
-from streamlit.components.v1 import html as component_html
+
 
 from visionvoice.core import FrameAssessment, LiveState, MobilityReasoningPipeline, format_distance
 from visionvoice.pipeline import Yolo26Detector, analyze_frame, annotate_frame
@@ -24,7 +24,6 @@ st.set_page_config(page_title="VisionVoice AI", page_icon="👁️", layout="wid
 @st.cache_resource(show_spinner="Loading YOLO26 detector…")
 def load_detector(weights: str, confidence: float, image_size: int, device: str) -> Yolo26Detector:
     return Yolo26Detector(weights, confidence, image_size, device)
-
 
 @st.cache_resource
 def get_shared_state() -> LiveState:
@@ -60,7 +59,7 @@ def local_link() -> str:
             host = connection.getsockname()[0]
         except OSError:
             host = "127.0.0.1"
-    return f"http://{host}:{port}"
+    return f"https://{host}:{port}"
 
 
 def global_link() -> Optional[str]:
@@ -116,7 +115,7 @@ def show_dashboard(assessment: Optional[FrameAssessment], alerts) -> None:
         for event in assessment.risks
     ]
     if risk_rows:
-        st.dataframe(risk_rows, use_container_width=True, hide_index=True)
+        st.dataframe(risk_rows, width="stretch", hide_index=True)
     else:
         st.caption("No objects are currently detected.")
 
@@ -135,14 +134,14 @@ def analyze_uploaded_frame(detector: Yolo26Detector, reasoning: MobilityReasonin
     if image is None:
         st.error("The image could not be decoded.")
         return
-    if st.button("Analyze image", type="primary", use_container_width=True):
+    if st.button("Analyze image", type="primary", width="stretch"):
         try:
             with st.spinner("Detecting and assessing risk…"):
                 assessment = analyze_frame(image, detector, reasoning)
             annotated = annotate_frame(image, assessment)
             encoded, jpeg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 90])
             state.update(assessment, jpeg.tobytes() if encoded else None)
-            st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
+            st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), channels="RGB", width="stretch")
         except Exception as exc:
             st.error(f"Unable to run YOLO26: {exc}")
 
@@ -156,12 +155,28 @@ def run_live_camera(detector: Yolo26Detector, reasoning: MobilityReasoningPipeli
         return
 
     st.caption("Grant camera permission, then press START. This browser becomes the broadcaster; other devices can open Viewer mode to receive its processed feed.")
+    
+    camera_facing = st.radio("Camera View", ["Default", "Front View", "Back View"], horizontal=True)
+    if camera_facing == "Default":
+        video_constraints = True
+    elif camera_facing == "Front View":
+        video_constraints = {"facingMode": "user"}
+    elif camera_facing == "Back View":
+        video_constraints = {"facingMode": "environment"}
+
     webrtc_streamer(
-        key="visionvoice-live-camera",
+        key=f"visionvoice-live-camera-{camera_facing}",
         mode=WebRtcMode.SENDRECV,
-        media_stream_constraints={"video": True, "audio": False},
+        media_stream_constraints={"video": video_constraints, "audio": True},
         video_processor_factory=make_video_processor(detector, reasoning, state),
         async_processing=True,
+        video_html_attrs={
+            "autoPlay": True,
+            "controls": False,
+            "style": {"width": "100%"},
+            "playsinline": True,
+            "muted": True
+        }
     )
 
 
@@ -170,7 +185,42 @@ def show_remote_view(state: LiveState) -> None:
     if preview_jpeg is None:
         st.info("Waiting for a broadcaster. Open this app on the camera device and choose Live broadcaster.")
         return
-    st.image(preview_jpeg, caption="Shared processed live feed", use_container_width=True)
+    st.image(preview_jpeg, caption="Shared processed live feed", width="stretch")
+
+
+def analyze_uploaded_video(detector: Yolo26Detector, reasoning: MobilityReasoningPipeline, state: LiveState, voice_agent=None) -> None:
+    import tempfile
+    upload = st.file_uploader("Upload a video file", type=["mp4", "avi", "mov"], key="analysis_video")
+    if upload is None:
+        return
+        
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tfile:
+        tfile.write(upload.read())
+        video_path = tfile.name
+        
+    if st.button("Analyze video", type="primary", width="stretch"):
+        stframe = st.empty()
+        cap = cv2.VideoCapture(video_path)
+        try:
+            with st.spinner("Analyzing video..."):
+                while cap.isOpened():
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    assessment = analyze_frame(frame, detector, reasoning)
+                    annotated = annotate_frame(frame, assessment)
+                    encoded, jpeg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                    state.update(assessment, jpeg.tobytes() if encoded else None)
+                    
+                    if voice_agent and assessment.primary_alert:
+                        # Create a mock alert tuple to pass to the voice agent
+                        mock_alerts = [(0, assessment.timestamp, assessment.primary_alert)]
+                        voice_agent.speak(mock_alerts, True)
+                        
+                    stframe.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), channels="RGB", width="stretch")
+        finally:
+            cap.release()
+            os.unlink(video_path)
 
 
 def main() -> None:
@@ -186,7 +236,7 @@ def main() -> None:
             help="Use a local custom checkpoint or an official Ultralytics YOLO26 model name.",
         )
         confidence = st.slider("Detection confidence", 0.20, 0.85, 0.25, 0.05)
-        image_size = st.select_slider("Inference size", options=[416, 512, 640, 768], value=768)
+        image_size = st.select_slider("Inference size", options=[416, 512, 640, 768, 1024, 1280], value=768)
         device = st.selectbox("Compute device", options=["", "cpu", "mps", "0"], index=2, format_func=lambda value: value or "Auto")
         horizontal_fov = st.slider(
             "Camera horizontal field of view (degrees)",
@@ -200,7 +250,7 @@ def main() -> None:
         narration_mode = st.radio(
             "Voice guidance",
             ["All detected objects (hazards first)", "Priority hazards"],
-            index=0,
+            index=1,
             help="All-object mode gives buses, bikes, vehicles, and harmful tools first priority, then reports normal objects.",
         )
         report_every_object = st.toggle(
@@ -233,19 +283,34 @@ def main() -> None:
     )
     state = get_shared_state()
 
-    mode = st.radio("Mode", ["Live broadcaster", "Remote viewer", "Upload a test image"], horizontal=True)
+    # Check if the user is accessing the app from localhost
+    is_localhost = False
+    if hasattr(st, "context") and hasattr(st.context, "headers"):
+        host_header = st.context.headers.get("Host", "")
+        if host_header.startswith("localhost") or host_header.startswith("127.0.0.1"):
+            is_localhost = True
+
+    mode_options = ["Live broadcaster"]
+    if is_localhost:
+        mode_options.append("Remote viewer")
+    mode_options.extend(["Upload a test image", "Analyze recorded video"])
+
+    mode = st.radio("Mode", mode_options, horizontal=True)
     left, right = st.columns([1.5, 1])
     with left:
         if mode == "Live broadcaster":
             run_live_camera(detector, reasoning, state)
         elif mode == "Remote viewer":
             show_remote_view(state)
-        else:
+        elif mode == "Upload a test image":
             analyze_uploaded_frame(detector, reasoning, state)
+        else:
+            voice_agent = BrowserVoiceAgent(voice_preference=preferred_voice, rate=voice_rate)
+            analyze_uploaded_video(detector, reasoning, state, voice_agent=voice_agent)
     with right:
         assessment, alerts, _ = state.snapshot()
         show_dashboard(assessment, alerts)
-        if st.button("Clear shared activity", use_container_width=True):
+        if st.button("Clear shared activity", width="stretch"):
             state.clear()
             st.rerun()
 
@@ -257,7 +322,7 @@ def main() -> None:
         try:
             from streamlit_autorefresh import st_autorefresh
 
-            st_autorefresh(interval=500, key="visionvoice-live-refresh")
+            st_autorefresh(interval=250, key="visionvoice-live-refresh")
         except ImportError:
             st.caption("Install streamlit-autorefresh for automatic updates during live sharing.")
 

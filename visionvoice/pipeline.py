@@ -38,6 +38,7 @@ class Yolo26Detector:
             conf=self.confidence,
             imgsz=self.image_size,
             device=self.device,
+            tracker="bytetrack.yaml",
         )[0]
         if result.boxes is None or len(result.boxes) == 0:
             return ()
