@@ -161,9 +161,9 @@ def run_live_camera(detector: Yolo26Detector, reasoning: MobilityReasoningPipeli
     if camera_facing == "Default":
         video_constraints = True
     elif camera_facing == "Front View":
-        video_constraints = {"facingMode": "user"}
+        video_constraints = {"facingMode": {"ideal": "user"}}
     elif camera_facing == "Back View":
-        video_constraints = {"facingMode": "environment"}
+        video_constraints = {"facingMode": {"ideal": "environment"}}
 
     rtc_config = RTCConfiguration(
         {"iceServers": [{"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}]}
@@ -173,7 +173,7 @@ def run_live_camera(detector: Yolo26Detector, reasoning: MobilityReasoningPipeli
         key=f"visionvoice-live-camera-{camera_facing}",
         mode=WebRtcMode.SENDRECV,
         rtc_configuration=rtc_config,
-        media_stream_constraints={"video": video_constraints, "audio": True},
+        media_stream_constraints={"video": video_constraints, "audio": False},
         video_processor_factory=make_video_processor(detector, reasoning, state),
         async_processing=True,
         video_html_attrs={
