@@ -59,7 +59,8 @@ def local_link() -> str:
             host = connection.getsockname()[0]
         except OSError:
             host = "127.0.0.1"
-    return f"https://{host}:{port}"
+    protocol = "https" if os.environ.get("STREAMLIT_SERVER_SSL_CERT_FILE") else "http"
+    return f"{protocol}://{host}:{port}"
 
 
 def global_link() -> Optional[str]:
@@ -148,7 +149,7 @@ def analyze_uploaded_frame(detector: Yolo26Detector, reasoning: MobilityReasonin
 
 def run_live_camera(detector: Yolo26Detector, reasoning: MobilityReasoningPipeline, state: LiveState) -> None:
     try:
-        from streamlit_webrtc import WebRtcMode, webrtc_streamer
+        from streamlit_webrtc import RTCConfiguration, WebRtcMode, webrtc_streamer
         from visionvoice.live import make_video_processor
     except ImportError:
         st.error("Live webcam support is unavailable. Install the dependencies in requirements.txt.")
@@ -164,9 +165,14 @@ def run_live_camera(detector: Yolo26Detector, reasoning: MobilityReasoningPipeli
     elif camera_facing == "Back View":
         video_constraints = {"facingMode": "environment"}
 
+    rtc_config = RTCConfiguration(
+        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}]}
+    )
+
     webrtc_streamer(
         key=f"visionvoice-live-camera-{camera_facing}",
         mode=WebRtcMode.SENDRECV,
+        rtc_configuration=rtc_config,
         media_stream_constraints={"video": video_constraints, "audio": True},
         video_processor_factory=make_video_processor(detector, reasoning, state),
         async_processing=True,
@@ -232,12 +238,12 @@ def main() -> None:
         st.header("Runtime settings")
         weights = st.text_input(
             "YOLO26 weights",
-            value="yolo26x.pt",
+            value="yolo26n.pt",
             help="Use a local custom checkpoint or an official Ultralytics YOLO26 model name.",
         )
         confidence = st.slider("Detection confidence", 0.20, 0.85, 0.25, 0.05)
-        image_size = st.select_slider("Inference size", options=[416, 512, 640, 768, 1024, 1280], value=768)
-        device = st.selectbox("Compute device", options=["", "cpu", "mps", "0"], index=2, format_func=lambda value: value or "Auto")
+        image_size = st.select_slider("Inference size", options=[416, 512, 640, 768, 1024, 1280], value=640)
+        device = st.selectbox("Compute device", options=["", "cpu", "mps", "0"], index=0, format_func=lambda value: value or "Auto")
         horizontal_fov = st.slider(
             "Camera horizontal field of view (degrees)",
             35,
@@ -283,18 +289,7 @@ def main() -> None:
     )
     state = get_shared_state()
 
-    # Check if the user is accessing the app from localhost
-    is_localhost = False
-    if hasattr(st, "context") and hasattr(st.context, "headers"):
-        host_header = st.context.headers.get("Host", "")
-        if host_header.startswith("localhost") or host_header.startswith("127.0.0.1"):
-            is_localhost = True
-
-    mode_options = ["Live broadcaster"]
-    if is_localhost:
-        mode_options.append("Remote viewer")
-    mode_options.extend(["Upload a test image", "Analyze recorded video"])
-
+    mode_options = ["Live broadcaster", "Remote viewer", "Upload a test image", "Analyze recorded video"]
     mode = st.radio("Mode", mode_options, horizontal=True)
     left, right = st.columns([1.5, 1])
     with left:

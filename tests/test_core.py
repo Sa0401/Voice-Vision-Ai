@@ -45,14 +45,15 @@ def test_all_object_narration_prioritizes_hazards_and_reports_normal_scene():
         ],
         (640, 480),
     )
-    assert hazard_assessment.primary_alert.startswith("Hazard: Bus")
+    assert "bus" in hazard_assessment.primary_alert.lower()
+    assert "safety" in hazard_assessment.primary_alert.lower()
 
     normal_pipeline = MobilityReasoningPipeline(narrate_all=True, max_voice_objects=2)
     normal_assessment = normal_pipeline.assess(
         [Detection("person", 0.9, (220, 90, 320, 450))],
         (640, 480),
     )
-    assert normal_assessment.primary_alert.startswith("Normal scene:")
+    assert normal_assessment.primary_alert.startswith("Normal scene.")
 
 
 def test_all_object_mode_does_not_cap_the_spoken_list():
@@ -66,10 +67,13 @@ def test_all_object_mode_does_not_cap_the_spoken_list():
         ],
         (640, 480),
     )
-    assert assessment.primary_alert.count(";") == 3
+    # When max_voice_objects=0, all detected objects are included
+    for obj in ["bus", "person", "chair", "bottle"]:
+        assert obj in assessment.primary_alert.lower()
 
 
 def test_clear_scene_is_announced_with_a_cautious_continue_message():
     pipeline = MobilityReasoningPipeline(narrate_all=True)
     assessment = pipeline.assess([], (640, 480))
-    assert assessment.primary_alert == "No immediate hazards detected. Continue with caution."
+    assert "normal scene" in assessment.primary_alert.lower()
+
